@@ -8,6 +8,8 @@ import h5py
 import Config
 import scipy.io as sio
 from scipy.optimize import fmin_l_bfgs_b
+from pyDOE import lhs
+from sklearn.cluster import KMeans
 class DeepMCR(object):
 	def __init__(self):
 		# 1). check the existence of the weights file
@@ -24,17 +26,60 @@ class DeepMCR(object):
 		self.loadWeights()
 		print("[Progress] Weights loaded.")
 		self.img = sio.loadmat(self.config.img)['IMG']
-		temp = np.zeros((224, 224, 3))
-		temp[:, :, 0] = self.img
-		temp[:, :, 1] = self.img
-		temp[:, :, 2] = self.img
-		self.img = temp
+		if self.config.lhs:
+			# use LHS to convert one phase to three phase
+			lhd = lhs(3, samples=self.config.phaseNum, criterion='maximin')
+			phaseMap = {}
+			for i in xrange(self.config.phaseNum):
+				phaseMap[str(i)] = lhd[i, :]
+
+			temp = np.zeros((224, 224, 3))
+			for i in xrange(224):
+				for j in xrange(224):
+					label = self.img[i, j]
+					vectorRepresentation = phaseMap[str(label)]
+					temp[i, j, :] = vectorRepresentation
+			self.img = temp
+			self.img[:, :, 0] -= 0.5
+			self.img[:, :, 1] -= 0.5
+			self.img[:, :, 2] -= 0.5
+
+		else:
+			# just copy and paste one channel into three channels
+			temp = np.zeros((224, 224, 3))
+			temp[:, :, 0] = self.img
+			temp[:, :, 1] = self.img
+			temp[:, :, 2] = self.img
+			self.img = temp
 		#substrate mean
-		self.img = self.img.astype(np.float32)
-		self.img[:, :, 0] -= 0.40760392
-		self.img[:, :, 1] -= 0.45795686
-		self.img[:, :, 2] -= 0.48501961
+			self.img = self.img.astype(np.float32)
+			self.img[:, :, 0] -= 0.40760392
+			self.img[:, :, 1] -= 0.45795686
+			self.img[:, :, 2] -= 0.48501961
 		self.img = np.expand_dims(self.img, 0)
+		self.build()
+		self.decode()
+
+	def decode(self):
+		if not self.config.lhs:
+			#convert RGB to grayscale
+			r, g, b = self.recon[:, :, 0], self.recon[:, :, 1], self.recon[:, :, 2]
+			gray = 0.2989 * r + 0.5870 * g + 0.1140 * b
+			np.save(self.recon, gray)
+			return gray
+
+		else:
+			#kmeans clustering based phase identification
+			img = self.recon
+			assert len(img.shape) == 3
+			L1, L2, _ = img.shape
+			X = np.reshape(img, (224*224, -1)) # transform into data sheet format
+			kmeans = KMeans(n_clusters=phaseNum, max_iter=1000).fit(X)
+			y = kmeans.labels_
+			#centers = kmeans.cluster_centers_
+			ret = np.reshape(y, (224, 224))
+			np.save(self.recon, ret)
+			return ret
 
 	def loadWeights(self):
 		# load VGG weights
@@ -134,7 +179,9 @@ class DeepMCR(object):
 		#recon[:, :, 1] += 0.45795686
 		#recon[:, :, 2] += 0.48501961
 
-		np.save(self.config.recon, recon)
+		#np.save(self.config.recon, recon)
+
+		self.recon = recon
 
 		
 	def LossGraph(self, x, xp):
@@ -290,5 +337,6 @@ class DeepMCR(object):
 
 if __name__=='__main__':
 	builder = DeepMCR()
-	builder.build()
+	recon = builder.build()
+
 
